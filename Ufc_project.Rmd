@@ -1,0 +1,563 @@
+---
+title: "Which UFC division has been the most stable over time? (1993 -2021)"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+author: "Brock Fuller"
+---
+
+```{r setup_data, message=FALSE, warning=FALSE, echo=FALSE}
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(janitor)
+library(ggplot2)
+library(forcats)
+library(scales)
+library(ggrepel)
+
+ufc <- read_csv("data.csv", quote = "\"", show_col_types = FALSE) %>% clean_names()
+
+title_fights <- ufc %>%
+  filter(title_bout == TRUE) %>%
+  mutate(
+    weight_class_clean = gsub("Tournament|Interim|Championship", "", weight_class) |> trimws(),
+    event_date = parse_date_time(date, orders = c("mdy","dmy","ymd")),
+    year = year(event_date)
+  )
+
+belt_history <- title_fights %>%
+  arrange(weight_class, event_date) %>%
+  group_by(weight_class) %>%
+  summarise(
+    total_title_fights = n(),
+    belt_changes = sum(winner != lag(winner), na.rm = TRUE),
+    .groups="drop"
+  ) %>%
+  mutate(
+    turnover_rate = belt_changes / total_title_fights,
+    stability_index = 1 - turnover_rate
+  )
+
+champ_data <- ufc %>%
+  filter(title_bout == TRUE) %>%
+  mutate(
+    champion = ifelse(winner == "Red", r_fighter, b_fighter),
+    date_parsed = parse_date_time(date, orders = c("mdy", "dmy", "ymd"), quiet = TRUE)
+  ) %>%
+  arrange(weight_class, date_parsed) %>%
+  group_by(weight_class) %>%
+  mutate(
+    reign_change = champion != lag(champion, default = first(champion)),
+    defense = ifelse(reign_change == FALSE, 1, 0)  # defense counted only when SAME champ continues
+  ) %>%
+  ungroup()
+
+
+dominant_champs <- champ_data %>%
+  group_by(weight_class, champion) %>%
+  summarise(defenses = sum(defense, na.rm = TRUE), .groups = "drop") %>%
+  slice_max(defenses, n = 1) %>%
+  ungroup()
+
+
+
+stability_dominance <- belt_history %>%
+  select(weight_class, stability_index) %>%
+  left_join(dominant_champs, by = "weight_class")
+
+
+
+```
+# Introduction 
+Mixed martial arts titles change hands for many reasons — rising contenders, aging champions, matchmaking shifts, and skill evolution. Because each UFC weight class develops at its own pace, some divisions settle into long and predictable championship eras, while others cycle through multiple champions in rapid succession.
+
+This project takes a broad look at UFC championship history to see how stable each division has actually been over time. Instead of focusing on individual fighters, the goal is to compare divisions themselves: which weight classes tend to keep champions in place, and which experience constant turnover and short-lived title reigns?
+
+By summarising official title outcomes across all divisions, the analysis identifies long-term patterns in stability and volatility and sets the stage for comparing divisions not just by the fighters who held the belt, but by the structural behaviour of the division as a whole.
+
+
+Using official title fight outcomes, the analysis calculates two core metrics:
+
+- **Championship Turnover Rate** — how frequently belts change hands
+- **Stability Index** — how long divisions retain champions relative to total title fights
+
+Together, these measures let us directly compare divisions and see how differently they behave over time. Some divisions hold onto champions for long stretches, while others cycle through titleholders quickly. 
+
+Beyond simply ranking divisions as stable or volatile, the metrics also help show whether stability actually lines up with dominant champions, or if divisions stay stable for other reasons (fewer fights scheduled, talent bottlenecks, era shifts, etc.).
+
+This gives us a straightforward way to look at UFC history from a division-level perspective rather than focusing on individual stars. It also highlights broader patterns across eras — changes in matchmaking frequency, talent depth, expansion periods, and how competitive churn has evolved over time.
+
+This data was sourced from kaggle
+
+
+## Mathematical Framework
+
+To quantify divisional stability and championship volatility, two linked metrics were constructed based on official UFC title fight outcomes. These measures provide normalized rates that allow comparison across divisions with very different histories, number of events, and title defenses.
+
+### 1. Championship Turnover Rate
+
+The turnover rate captures how frequently a division experiences a new champion relative to its total title fight opportunities:
+
+\[
+T_d = \frac{C_d}{F_d}
+\]
+
+Where:
+
+- \( T_d \) = Turnover Rate for division \( d \)
+- \( C_d \) = Number of championship changes (new, different champion captures belt)
+- \( F_d \) = Total number of title fights in division \( d \)
+
+A value closer to **1** indicates highly volatile divisions where belts change hands frequently. Lower values indicate rare title changes and longer-lasting champions.
+
+
+### 2. Stability Index
+
+To express divisional consistency directly, turnover is inverted. The stability index reflects sustained championship tenure proportional to available title fights:
+
+\[
+S_d = 1 - \frac{C_d}{F_d}
+\]
+
+Where:
+
+- \( S_d \) = Stability Index for division \( d \)
+
+Values near **1.0** represent divisions with long-reigning champions and minimal churn, while values below **0.4** represent chaotic title histories with frequent dethroning.
+
+
+### Interpretation Scale
+
+\begin{tabular}{p{3cm} p{11cm}}
+\textbf{Value Range} & \textbf{Meaning} \\
+\hline
+1.0 &
+Perfect stability (no title change or a brand-new division) \\[8pt]
+
+0.8 -- 0.9 &
+Long reigns, rare dethronings \\[8pt]
+
+0.5 &
+Moderate turnover, belts change roughly half of opportunities \\[8pt]
+
+< 0.4 &
+High volatility, rapid dethroning and title cycling \\
+\hline
+\end{tabular}
+
+
+### Volatility Results & Interpretation
+
+The volatility metric reveals how frequently each division experiences championship turnover. Higher turnover rates indicate divisions where belts change hands often, signaling competitive parity, unstable matchmaking eras, or shallow talent pools. Lower volatility reflects divisions dominated by long-reigning champions.
+
+
+### Volatility summary table
+
+```{r, echo=FALSE, warning=FALSE}
+### Volatility Summary Table
+
+knitr::kable(
+  belt_history %>%
+    select(weight_class, turnover_rate) %>%
+    arrange(desc(turnover_rate)),
+  col.names = c("Weight Class", "Turnover Rate (0–1)"),
+  caption = "Ranked championship volatility by UFC division"
+)
+
+```
+
+
+
+### Key observations:
+
+- **Lightweight and Women’s Strawweight represent the highest volatility** in UFC history.  
+  These divisions show constant dethroning cycles, rapid ascents, and short title reigns, suggesting frequent disruption at the top.
+
+- **Featherweight, Bantamweight, and Women’s Featherweight also show elevated turnover**, indicating similar competitive turbulence but with slightly more occasional sustained reigns.
+
+- **Women’s Flyweight and Catchweight exhibit the lowest volatility**, reflecting minimal title turnover.
+  In these divisions, champions tend to retain belts for long stretches, often defining the identity of the division around a single dominant figure.
+
+- **Light Heavyweight is uniquely positioned**: despite housing some of the sport’s greatest title runs (e.g., long reigns), it shows *moderate* turnover overall, neither neither wildly unstable nor locked down by long-term champions across eras.
+
+### What This Answers
+
+- **Which divisions are most volatile?**  
+  Lightweight, Women’s Strawweight, and Featherweight.
+
+- **Which divisions experience the least turnover?**  
+  Women’s Flyweight and Catchweight.
+
+### What This Suggests
+
+- High-volatility divisions tend to be those with:
+  - deep challenger pools
+  - stylistic diversity
+  - frequent matchmaking reshuffles
+
+- Low-volatility divisions tend to be shaped by:
+  - long-term champions
+  - weaker contender pipelines
+  - narrow stylistic ecosystems
+
+These findings establish the foundation for connecting volatility to **championship dominance**, which is analyzed in the next section.
+
+
+
+### Volatility chart 
+
+```{r volatility_plot, fig.width=18, fig.height=10, message=FALSE, warning=FALSE, echo=FALSE}
+
+ggplot(
+  belt_history,
+  aes(
+    x = turnover_rate,
+    y = reorder(weight_class, turnover_rate),
+    fill = turnover_rate
+  )
+) +
+  geom_col(width = 0.7) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.2),
+    labels = scales::label_number(accuracy = 0.1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_fill_gradient(
+    low   = "forestgreen",
+    high  = "red",
+    limits = c(0, 1),
+    name  = "Turnover Rate"
+  ) +
+  labs(
+    title    = "UFC Championship Volatility by Division",
+    subtitle = "Higher = More Frequent Champion Changes",
+    x        = "Turnover Rate (0–1)",
+    y        = "Weight Division"
+  ) +
+  theme_minimal(base_size = 20) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(face = "bold", size = 26, hjust = 0.5),
+    plot.subtitle    = element_text(size = 18, hjust = 0.5),
+    axis.title.x     = element_text(face = "bold", size = 16),
+    axis.title.y     = element_text(face = "bold", size = 16),
+    axis.text.x      = element_text(size = 13),
+    axis.text.y      = element_text(size = 14)
+  )
+```
+
+
+### Stability Results & Interpretation
+
+The Stability Index captures how long divisions retain their champions relative to total title fight opportunities. Higher values reflect eras defined by extended title reigns, fewer dethronings, and predictable divisional hierarchies. Lower values indicate divisions with unstable championship tenure and constant turnover.
+
+### Stability summary table
+
+```{r, echo=FALSE, warning=FALSE}
+
+### Stability Summary Table
+
+knitr::kable(
+  belt_history %>%
+    select(weight_class, stability_index) %>%
+    arrange(desc(stability_index)),
+  col.names = c("Weight Class", "Stability Index (0–1)"),
+  caption = "Ranked championship stability by UFC division"
+)
+
+```
+
+
+
+### Key observations:
+
+- **Women’s Flyweight and Catchweight represent the highest stability values**, indicating long-standing titleholders with minimal belt disruption. These divisions have historically centered around a single dominant champion at a time, shaping divisional identity for multi-year spans.
+
+- **Women’s Bantamweight and Light Heavyweight also exhibit high stability**, though with occasional periods of volatility between dominant reigns. These divisions tend to be defined by legacy champions who maintain control for extended runs (e.g., dominant multi-defense champions).
+
+- **Middleweight, Heavyweight, and Welterweight occupy the moderate stability range**, showing balanced competitive dynamics. While dominant reigns emerge, turnover still occurs consistently enough to prevent any single fighter from monopolizing the belt indefinitely.
+
+- **Women’s Strawweight and Featherweight reflect the lowest stability among long-standing divisions**, overlapping with high volatility values. This indicates a deep and competitive challenger pool driving frequent dethronings, stylistic parity, and unpredictable title trajectories.
+
+### What This Answers
+
+- **Which divisions sustain champions the longest?**  
+  Women’s Flyweight, Catchweight, Women’s Bantamweight, Light Heavyweight.
+
+- **Which divisions show balanced but not extreme churn?**  
+  Welterweight, Middleweight, Heavyweight.
+
+- **Where is stability weakest?**  
+  Women’s Strawweight and Featherweight.
+
+### What This Suggests
+
+- High-stability divisions tend to be characterized by:
+  - enduring champions
+  - narrow challenger pipelines
+  - stylistic dominance (one style ruling an era)
+
+- Low-stability divisions reflect:
+  - high parity between challengers
+  - talent depth, matchmaking diversity
+  - frequent dethroning cycles
+
+Where volatility captures how often belts change hands, stability shows the opposite dynamic where title reigns endure rather than reset. It helps identify divisions defined not by constant rotation but by longer periods of control. Combined, stability and turnover reveal two core championship patterns: **movement (frequent dethroning)** and **entrenchment (sustained reigns)**.
+
+
+
+
+
+
+
+
+
+### **Stability (bar)**
+
+```{r stability_bar_clean, fig.width=18, fig.height=10, echo=FALSE}
+
+ggplot(belt_history,
+       aes(x = stability_index,
+           y = reorder(weight_class, stability_index),
+           fill = stability_index)) +
+  geom_col(width = 0.72) +
+  scale_fill_gradientn(colors = c("#D60000", "#FF6A6A", "#6A7BFF", "#001BFF"),
+                       name = "Stability Index (0–1)",
+                       limits = c(0,1)) +
+  labs(
+    title = "UFC Championship Stability by Division",
+    subtitle = "Higher = Longer Reigns / Lower Turnover",
+    x = "Stability Index (0–1)",
+    y = "Weight Division"
+  ) +
+  theme_minimal(base_size = 22) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(face = "bold", size = 32, hjust = 0.5),
+    plot.subtitle    = element_text(size = 20, hjust = 0.5),
+    axis.title.x     = element_text(face = "bold", size = 22),
+    axis.title.y     = element_text(face = "bold", size = 22),
+    axis.text.y      = element_text(size = 20),
+    axis.text.x      = element_text(size = 18),
+    legend.title     = element_text(face = "bold", size = 20),
+    legend.text      = element_text(size = 18),
+    plot.margin      = margin(20,30,20,30)
+  )
+
+
+
+```
+
+
+
+
+---
+
+### Stability vs Championship Dominance — Interpretation
+
+**Core question:**  
+*Does stability actually correlate with elite champion dominance, or do divisions remain stable for other reasons?*
+
+This analysis directly examines how divisional stability interacts with championship dominance. While the Stability Index measures how rarely belts change hands, dominance reflects how long the most successful champion in each division retained the title through successful defenses. By comparing both, we isolate whether stability arises from a single dominant champion or from less competitive turnover overall.
+
+
+#### 1. High Stability + High Dominance
+- **Flyweight, Light Heavyweight**
+- Stability is driven by generational super-champions (e.g., Demetrious Johnson, Jon Jones).
+- Clear evidence that in these divisions, stability **does** correlate with dominance.
+
+#### 2. High Stability + Low Dominance
+- **Women’s Flyweight, Catchweight**
+- Divisions stay stable *without* extended championship runs.
+- Suggests stability emerges from shallow contender pools, newer divisions, or infrequent title scheduling.
+- Here, stability clearly **does not** equate to dominance.
+
+#### 3. Moderate Stability + Moderate Dominance
+- **Welterweight, Middleweight, Heavyweight**
+- Turnover is balanced with intermittent strong reigns.
+- Competitive depth maintains parity without full chaos.
+
+#### 4. Low Stability + Low Dominance
+- **Women’s Strawweight, Featherweight, Lightweight**
+- Frequent dethronings, deep talent rotation, no anchor champion.
+- High volatility reflects genuine competitive equilibrium rather than weakness.
+
+
+
+
+### **Stability vs Dominance Quadrants**
+
+
+```{r stability_quadrant, fig.width = 18, fig.height = 11, dpi = 300, message = FALSE, warning = FALSE, echo=FALSE}
+
+# Rebuild stability_dominance cleanly for this plot
+stability_dominance <- champ_data %>%
+  group_by(weight_class, champion) %>%
+  summarise(defenses = sum(defense, na.rm = TRUE), .groups = "drop") %>%
+  group_by(weight_class) %>%
+  slice_max(defenses, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  inner_join(
+    belt_history %>% select(weight_class, stability_index),
+    by = "weight_class"
+  )
+
+x_med <- median(stability_dominance$stability_index, na.rm = TRUE)
+y_med <- median(stability_dominance$defenses,       na.rm = TRUE)
+
+ggplot(stability_dominance,
+       aes(x = stability_index, y = defenses, colour = defenses)) +
+
+  # ---- Quadrant shading ----
+  annotate("rect", xmin = -Inf, xmax = x_med, ymin = y_med, ymax = Inf,
+           fill = "#FDE0DD", alpha = 0.35, colour = NA) +
+  annotate("rect", xmin = x_med, xmax = Inf, ymin = y_med, ymax = Inf,
+           fill = "#E0F3DB", alpha = 0.35, colour = NA) +
+  annotate("rect", xmin = -Inf, xmax = x_med, ymin = -Inf, ymax = y_med,
+           fill = "#FFF7BC", alpha = 0.35, colour = NA) +
+  annotate("rect", xmin = x_med, xmax = Inf, ymin = -Inf, ymax = y_med,
+           fill = "#DEEBF7", alpha = 0.35, colour = NA) +
+
+  # ---- Points + labels ----
+  geom_point(size = 6, alpha = 0.95) +
+  ggrepel::geom_text_repel(
+    aes(label = weight_class),
+    size = 5.2,
+    fontface = "bold",
+    colour = "black",
+    max.overlaps = Inf,
+    box.padding = 0.5,
+    segment.size = 0.25
+  ) +
+
+  # ---- Colour legend for number of defenses ----
+  scale_color_gradientn(
+    colours = c("#D60000", "#FF6A6A", "#6A7BFF", "#001BFF"),
+    limits  = c(0, 12),                    # legend spans 0–12
+    breaks  = c(0, 3, 6, 9, 12),
+    name    = "Title Defenses"
+  ) +
+
+  # ---- Fix y-axis to 0–12 ----
+  scale_y_continuous(
+    limits = c(0, 12),                     # full 0–12 range
+    breaks = seq(0, 12, 2),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+
+  labs(
+    title    = "UFC Division Stability vs Championship Dominance",
+    subtitle = "Stability index vs most successful champion's title defenses",
+    x        = "Stability Index (0 = Chaos, 1 = Fully Stable)",
+    y        = "Successful Title Defenses (0–12)"
+  ) +
+
+  theme_minimal(base_size = 20) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title   = element_text(size = 28, face = "bold"),
+    plot.subtitle= element_text(size = 18),
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_text(size = 20, face = "bold"),
+    legend.title = element_text(size = 18, face = "bold"),
+    legend.text  = element_text(size = 14)
+  )
+
+
+``` 
+
+---
+## Statistical Evaluation of Stability vs Dominance
+
+### 1. Correlation Analysis: Do stable divisions actually produce dominant champions?
+
+To formally assess whether divisional stability is associated with dominant title reigns, we computed a non-parametric Spearman correlation:
+
+```{r, message=FALSE, warning=FALSE}
+cor.test(stability_dominance$stability_index,
+         stability_dominance$defenses,
+         method = "spearman")
+
+```
+### Correlation plot
+
+```{r stability_dominance_scatter, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(stability_dominance, aes(x = stability_index, y = defenses, label = weight_class)) +
+  geom_point(aes(color = stability_index), size = 4, alpha = 0.9) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  geom_text_repel(size = 3) +
+  scale_color_gradient(low = "red", high = "darkblue") +
+  labs(
+    title = "Stability vs Championship Dominance",
+    x = "Stability Index (0 = chaotic, 1 = fully stable)",
+    y = "Successful Title Defenses (Most dominant reign per division)",
+    color = "Stability"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+
+
+```
+
+## Final takeaway 
+While the scatterplot shows a mild upward trend—suggesting that more stable divisions *may* allow dominant champions to retain their belts longer, Spearman correlation results indicate a weak positive association (rho = 0.25, p = 0.41), meaning divisional stability does not meaningfully predict champion dominance.
+
+
+
+
+
+
+### 2. Regression Analysis: Does championship volume influence divisional stability?
+
+While volatility reflects turnover, it may also be structurally shaped by *how many title fights a division actually hosts*.  
+Divisions with frequent title scheduling naturally face more opportunities for dethroning, whereas divisions with sparse title activity may appear stable simply due to fewer championship events.
+
+To test whether total title fight volume predicts overall divisional volatility, we fit a linear regression model:
+
+```{r reg_volume, message=FALSE, warning=FALSE, echo=FALSE}
+model_volume <- lm(stability_index ~ total_title_fights, data = belt_history)
+summary(model_volume)
+
+ggplot(belt_history, aes(x = total_title_fights, y = stability_index)) +
+  geom_point(size = 4, alpha = 0.8, color = "red") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(
+    title = "Does Fight Volume Influence Stability?",
+    x = "Total Title Fights",
+    y = "Stability Index (0–1)"
+  ) +
+  theme_minimal(base_size = 18)
+
+```
+
+### Final Takeaway
+
+While the regression line trends slightly downward, the model shows **no meaningful link** between championship volume and stability. Divisions do not become stable simply because they host fewer or more title fights, **frequency alone doesn’t structure divisional order**
+
+
+### Summary Insights
+
+- Stability and dominance are not interchangeable: a division can remain orderly without producing long-reigning champions.
+
+- Volatile divisions like Lightweight and Women’s Strawweight turn over champions regularly because the competition at the top is dense, not because the division itself is chaotic.
+
+- Low-volatility divisions (e.g., Women’s Flyweight, Catchweight) retain champions longer due to narrower talent pipelines or a single dominant reign.
+
+- Stability and elite dominance only weakly align — divisional order does not reliably translate into multi-defense champions.
+
+- Dominance appears division-specific rather than system-wide: only certain weight classes generate long-reign dynasties.
+
+- Volatility often reflects legitimate contender depth, not matchmaking instability.
+
+- Stable divisions can result from two pathways: sustained talent bottlenecks or a single long-term champion.
+
+
